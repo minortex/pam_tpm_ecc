@@ -52,6 +52,67 @@
 #define DEFAULT_TCTI     "device:/dev/tpmrm0"
 
 /* ------------------------------------------------------------------ */
+/*  Human-readable TPM error decoder                                   */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Returns a static string for well-known TPM / TSS errors;
+ * otherwise NULL.  Keep this small — just the codes we can
+ * realistically hit in this module.
+ */
+static const char *
+tpm_error_string(TSS2_RC rc)
+{
+    /* Strip TSS layer bits: keep TPM_RC in lower 16 bits */
+    uint16_t tpm_rc = (uint16_t)(rc & 0xFFFFU);
+
+    /*
+     * TPM format-1 errors encode the session/handle/parameter in the
+     * upper bits.  Mask down to the format-0 error code for matching.
+     * Format-1: bit 7 = 1, bits 6:0 = error number.
+     * Format-0: bit 7 = 0, bits 6:0 = error number.
+     */
+    uint8_t code = (uint8_t)(tpm_rc & 0x007FU);
+
+    switch (code) {
+    case 0x001:  return "TPM: auth failure — wrong PIN or auth value";
+    case 0x005:  return "TPM: not initialized (missing Startup)";
+    case 0x008:  return "TPM: disabled";
+    case 0x01B:  return "TPM: scheme unsupported by key";
+    case 0x02C:  return "TPM: dictionary attack lockout — TPM locked, try again later";
+    case 0x08B:  return "TPM: handle not found — key may have been evicted";
+    case 0x09A:  return "TPM: auth value or salt too long";
+    }
+
+    /* TSS2 layer errors */
+    switch (rc & 0x00FF0000U) {
+    case 0x00080000U:
+        switch (rc & 0xFFFFU) {
+        case 5: return "RM: bad reference — check key_handle and TCTI";
+        }
+        break;
+    case 0x00070000U:
+        switch (rc & 0xFFFFU) {
+        case 0x000B: return "ESYS: parameter encryption failed (bad session symmetric algorithm)";
+        case 0x0018: return "ESYS: resource handle does not exist";
+        }
+        break;
+    }
+
+    return NULL;
+}
+
+static void
+log_tss_error(pam_handle_t *pamh, const char *where, TSS2_RC rc)
+{
+    const char *desc = tpm_error_string(rc);
+    if (desc)
+        pam_syslog(pamh, LOG_ERR, "%s: %s (0x%08X)", where, desc, rc);
+    else
+        pam_syslog(pamh, LOG_ERR, "%s: 0x%08X", where, rc);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Secure-memory helpers                                              */
 /* ------------------------------------------------------------------ */
 
@@ -194,13 +255,13 @@ tpm_sign(pam_handle_t *pamh,
     /* ---- init TCTI + ESYS --------------------------------------- */
     rc = Tss2_TctiLdr_Initialize(tcti_conf, &tcti);
     if (rc != TSS2_RC_SUCCESS) {
-        pam_syslog(pamh, LOG_ERR, "Tss2_TctiLdr_Initialize: 0x%08X", rc);
+        log_tss_error(pamh, "TctiLdr_Init", rc);
         goto out;
     }
 
     rc = Esys_Initialize(&ctx, tcti, NULL);
     if (rc != TSS2_RC_SUCCESS) {
-        pam_syslog(pamh, LOG_ERR, "Esys_Initialize: 0x%08X", rc);
+        log_tss_error(pamh, "Esys_Init", rc);
         goto out;
     }
     tcti = NULL;               /* owned by ctx now */
@@ -209,7 +270,7 @@ tpm_sign(pam_handle_t *pamh,
     rc = Esys_Startup(ctx, TPM2_SU_CLEAR);
     if (rc != TSS2_RC_SUCCESS && rc != TPM2_RC_INITIALIZE) {
         /* TPM2_RC_INITIALIZE means TPM was already started — OK */
-        pam_syslog(pamh, LOG_ERR, "Esys_Startup: 0x%08X", rc);
+        log_tss_error(pamh, "Esys_Startup", rc);
         goto out;
     }
 
@@ -218,8 +279,7 @@ tpm_sign(pam_handle_t *pamh,
                                ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE,
                                &key_tr);
     if (rc != TSS2_RC_SUCCESS) {
-        pam_syslog(pamh, LOG_ERR, "Esys_TR_FromTPMPublic(0x%08X): 0x%08X",
-                   key_handle_val, rc);
+        log_tss_error(pamh, "Esys_TR_FromTPMPublic", rc);
         goto out;
     }
 
@@ -232,7 +292,7 @@ tpm_sign(pam_handle_t *pamh,
         rc = Esys_TR_SetAuth(ctx, key_tr, &auth);
         secure_zero(auth.buffer, sizeof(auth.buffer));
         if (rc != TSS2_RC_SUCCESS) {
-            pam_syslog(pamh, LOG_ERR, "Esys_TR_SetAuth: 0x%08X", rc);
+            log_tss_error(pamh, "Esys_TR_SetAuth", rc);
             goto out;
         }
     }
@@ -270,7 +330,7 @@ tpm_sign(pam_handle_t *pamh,
 
     secure_zero(message_hash, sizeof(message_hash));
     if (rc != TSS2_RC_SUCCESS) {
-        pam_syslog(pamh, LOG_ERR, "Esys_Sign: 0x%08X", rc);
+        log_tss_error(pamh, "Esys_Sign", rc);
         goto out;
     }
 
