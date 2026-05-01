@@ -510,13 +510,15 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
         goto cleanup;
     }
 
-    /* Lock pages so pin / challenge / sig never hit swap */
+    /* Lock pages so pin / challenge / sig never hit swap.
+     * Failure is non-fatal — sandboxed services (polkit, etc.)
+     * routinely have RLIMIT_MEMLOCK=0.  We still clear buffers
+     * on exit regardless. */
     if (secure_mlock(pin, MAX_PIN_LEN + 1) != 0 ||
         secure_mlock(challenge, CHALLENGE_SIZE) != 0 ||
         secure_mlock(sig_raw, MAX_SIG_RAW) != 0) {
-        pam_syslog(pamh, LOG_CRIT, "mlock failed (RLIMIT_MEMLOCK?) — rejecting");
-        pam_ret = PAM_BUF_ERR;
-        goto cleanup;
+        pam_syslog(pamh, LOG_WARNING,
+                   "mlock failed — continuing without memory locking");
     }
 
     /* ---- obtain PIN via PAM conversation ------------------------- */
