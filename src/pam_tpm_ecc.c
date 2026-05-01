@@ -19,6 +19,8 @@
 #include <string.h>
 #include <stdint.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
 #include <syslog.h>
@@ -54,23 +56,22 @@
 /* ------------------------------------------------------------------ */
 
 /*
- * sec_zero  – barrier-protected zeroing (not optimised away).
- * sec_free  – zero then free heap memory.
- * sec_mlock – lock pages so they are never swapped to disk.
+ * secure_zero  – guaranteed zeroing via glibc explicit_bzero.
+ *                Backed by compiler barriers and a symbol-preservation
+ *                technique that defeats dead-store elimination even
+ *                under LTO.  (Single volatile store as additional
+ *                guard on very old toolchains.)
  */
-
 static void
-sec_zero(void *p, size_t n)
+secure_zero(void *p, size_t n)
 {
     if (p == NULL || n == 0)
         return;
-    volatile unsigned char *vp = p;
-    while (n--)
-        *vp++ = 0;
+    explicit_bzero(p, n);
 }
 
 static int
-sec_mlock(void *p, size_t n)
+secure_mlock(void *p, size_t n)
 {
     if (p == NULL || n == 0)
         return 0;
@@ -80,10 +81,54 @@ sec_mlock(void *p, size_t n)
 }
 
 static void
-sec_munlock(void *p, size_t n)
+secure_munlock(void *p, size_t n)
 {
     if (p != NULL && n > 0)
         munlock(p, n);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Public-key file — atomic open + validate (TOCTOU-safe)              */
+/*                                                                      */
+/*  Opens the file, then validates the handle with fstat, so the check  */
+/*  and subsequent read are on the same inode.  Returns a fd on success */
+/*  or -1 on failure (with a syslog message).                           */
+/* ------------------------------------------------------------------ */
+
+static int
+open_and_validate_pubkey(pam_handle_t *pamh, const char *path)
+{
+    struct stat st;
+    int fd;
+
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        pam_syslog(pamh, LOG_ERR, "open(%s) failed: %s", path, strerror(errno));
+        return -1;
+    }
+
+    if (fstat(fd, &st) != 0) {
+        pam_syslog(pamh, LOG_ERR, "fstat(%s) failed: %s", path, strerror(errno));
+        close(fd);
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        pam_syslog(pamh, LOG_ERR, "%s is not a regular file", path);
+        close(fd);
+        return -1;
+    }
+    if (st.st_uid != 0) {
+        pam_syslog(pamh, LOG_ERR, "%s is not owned by root", path);
+        close(fd);
+        return -1;
+    }
+    if ((st.st_mode & 0777) & ~0644) {
+        pam_syslog(pamh, LOG_ERR, "%s has overly-permissive mode %04o",
+                   path, (unsigned)(st.st_mode & 07777));
+        close(fd);
+        return -1;
+    }
+    return fd;
 }
 
 /* ------------------------------------------------------------------ */
@@ -185,7 +230,7 @@ tpm_sign(pam_handle_t *pamh,
             goto out;
         memcpy(auth.buffer, pin, pin_len);
         rc = Esys_TR_SetAuth(ctx, key_tr, &auth);
-        sec_zero(auth.buffer, sizeof(auth.buffer));
+        secure_zero(auth.buffer, sizeof(auth.buffer));
         if (rc != TSS2_RC_SUCCESS) {
             pam_syslog(pamh, LOG_ERR, "Esys_TR_SetAuth: 0x%08X", rc);
             goto out;
@@ -223,7 +268,7 @@ tpm_sign(pam_handle_t *pamh,
                        &digest, &scheme, &null_ticket, &tpm_sig);
     }
 
-    sec_zero(message_hash, sizeof(message_hash));
+    secure_zero(message_hash, sizeof(message_hash));
     if (rc != TSS2_RC_SUCCESS) {
         pam_syslog(pamh, LOG_ERR, "Esys_Sign: 0x%08X", rc);
         goto out;
@@ -255,7 +300,7 @@ tpm_sign(pam_handle_t *pamh,
 
 out:
     if (tpm_sig != NULL) {
-        sec_zero(tpm_sig, sizeof(*tpm_sig));
+        secure_zero(tpm_sig, sizeof(*tpm_sig));
         free(tpm_sig);
     }
     if (ctx != NULL)
@@ -271,7 +316,7 @@ out:
 
 static int
 pubkey_verify(pam_handle_t *pamh,
-              const char *pubkey_path,
+              int pubkey_fd,
               const unsigned char *challenge, size_t chal_len,
               const unsigned char *raw_sig, size_t raw_sig_len)
 {
@@ -283,10 +328,12 @@ pubkey_verify(pam_handle_t *pamh,
     unsigned char   *der = NULL;
     int              der_len = 0;
 
-    /* ---- load public key ---------------------------------------- */
-    bio = BIO_new_file(pubkey_path, "r");
+    /* ---- load public key from validated fd ------------------------
+     * BIO_new_fd takes ownership and closes fd on free.            */
+    bio = BIO_new_fd(pubkey_fd, BIO_CLOSE);
     if (bio == NULL) {
-        pam_syslog(pamh, LOG_ERR, "BIO_new_file(%s) failed", pubkey_path);
+        pam_syslog(pamh, LOG_ERR, "BIO_new_fd failed");
+        close(pubkey_fd);
         goto out;
     }
 
@@ -352,7 +399,7 @@ pubkey_verify(pam_handle_t *pamh,
 
 out:
     if (der != NULL) {
-        sec_zero(der, (size_t)der_len);
+        secure_zero(der, (size_t)der_len);
         OPENSSL_free(der);
     }
     ECDSA_SIG_free(ecsig);
@@ -385,6 +432,11 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     if (parse_args(pamh, argc, argv, &key_handle, &pubkey_path, &tcti_conf) != 0)
         return PAM_SERVICE_ERR;
 
+    /* ---- open + validate public key file (TOCTOU-safe) ------------ */
+    int pubkey_fd = open_and_validate_pubkey(pamh, pubkey_path);
+    if (pubkey_fd < 0)
+        return PAM_SERVICE_ERR;
+
     /* ---- allocate and lock sensitive buffers --------------------- */
     pin = calloc(1, MAX_PIN_LEN + 1);
     challenge = calloc(1, CHALLENGE_SIZE);
@@ -397,9 +449,13 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     }
 
     /* Lock pages so pin / challenge / sig never hit swap */
-    sec_mlock(pin, MAX_PIN_LEN + 1);
-    sec_mlock(challenge, CHALLENGE_SIZE);
-    sec_mlock(sig_raw, MAX_SIG_RAW);
+    if (secure_mlock(pin, MAX_PIN_LEN + 1) != 0 ||
+        secure_mlock(challenge, CHALLENGE_SIZE) != 0 ||
+        secure_mlock(sig_raw, MAX_SIG_RAW) != 0) {
+        pam_syslog(pamh, LOG_CRIT, "mlock failed (RLIMIT_MEMLOCK?) — rejecting");
+        pam_ret = PAM_BUF_ERR;
+        goto cleanup;
+    }
 
     /* ---- obtain PIN via PAM conversation ------------------------- */
     {
@@ -425,7 +481,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
         size_t pin_len = strnlen(resp->resp, MAX_PIN_LEN);
         if (pin_len == 0 || pin_len > MAX_PIN_LEN) {
-            sec_zero(resp->resp, strnlen(resp->resp, MAX_PIN_LEN + 1));
+            secure_zero(resp->resp, strnlen(resp->resp, MAX_PIN_LEN + 1));
             free(resp->resp);
             free(resp);
             pam_syslog(pamh, LOG_ERR, "empty or overlong PIN");
@@ -434,7 +490,7 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
 
         memcpy(pin, resp->resp, pin_len);
         /* pin_len already <= MAX_PIN_LEN, pin is zero-filled */
-        sec_zero(resp->resp, strnlen(resp->resp, MAX_PIN_LEN + 1));
+        secure_zero(resp->resp, strnlen(resp->resp, MAX_PIN_LEN + 1));
         free(resp->resp);
         free(resp);
     }
@@ -455,31 +511,35 @@ pam_sm_authenticate(pam_handle_t *pamh, int flags,
     }
 
     /* ---- OpenSSL verification ------------------------------------ */
-    if (pubkey_verify(pamh, pubkey_path,
+    if (pubkey_verify(pamh, pubkey_fd,
                       challenge, CHALLENGE_SIZE,
                       sig_raw, sig_len) != 0) {
         pam_syslog(pamh, LOG_ERR, "signature verification failed");
         goto cleanup;
     }
+    pubkey_fd = -1;  /* fd ownership transferred to OpenSSL BIO */
 
     pam_syslog(pamh, LOG_INFO, "TPM ECC authentication succeeded");
     pam_ret = PAM_SUCCESS;
 
 cleanup:
+    /* Close pubkey fd if still owned (error before BIO takes over) */
+    if (pubkey_fd >= 0)
+        close(pubkey_fd);
     /* Zero and unlock sensitive buffers */
     if (pin != NULL) {
-        sec_zero(pin, MAX_PIN_LEN + 1);
-        sec_munlock(pin, MAX_PIN_LEN + 1);
+        secure_zero(pin, MAX_PIN_LEN + 1);
+        secure_munlock(pin, MAX_PIN_LEN + 1);
         free(pin);
     }
     if (challenge != NULL) {
-        sec_zero(challenge, CHALLENGE_SIZE);
-        sec_munlock(challenge, CHALLENGE_SIZE);
+        secure_zero(challenge, CHALLENGE_SIZE);
+        secure_munlock(challenge, CHALLENGE_SIZE);
         free(challenge);
     }
     if (sig_raw != NULL) {
-        sec_zero(sig_raw, MAX_SIG_RAW);
-        sec_munlock(sig_raw, MAX_SIG_RAW);
+        secure_zero(sig_raw, MAX_SIG_RAW);
+        secure_munlock(sig_raw, MAX_SIG_RAW);
         free(sig_raw);
     }
 

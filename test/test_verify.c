@@ -26,11 +26,10 @@
 /* ---------- helpers (same as pam_tpm_ecc.c) ---------------------------- */
 
 static void
-sec_zero(void *p, size_t n)
+secure_zero(void *p, size_t n)
 {
     if (p == NULL || n == 0) return;
-    volatile unsigned char *vp = p;
-    while (n--) *vp++ = 0;
+    explicit_bzero(p, n);
 }
 
 /* ---------- DER → raw r||s (inverse of the module's conversion) -------- */
@@ -115,7 +114,7 @@ raw_verify(EVP_PKEY *pkey,
     ret = 0;
 
 out:
-    if (der != NULL) { sec_zero(der, (size_t)der_len); OPENSSL_free(der); }
+    if (der != NULL) { secure_zero(der, (size_t)der_len); OPENSSL_free(der); }
     ECDSA_SIG_free(ecsig);
     EVP_MD_CTX_free(mdctx);
     return ret;
@@ -361,7 +360,7 @@ test_leading_zero_r(void)
         v = v && EVP_DigestVerifyUpdate(vctx, challenge, sizeof(challenge));
         v = v && EVP_DigestVerifyFinal(vctx, der, (size_t)dlen);
         EVP_MD_CTX_free(vctx);
-        sec_zero(der, (size_t)dlen);
+        secure_zero(der, (size_t)dlen);
         OPENSSL_free(der);
 
         if (v != 1) { FAIL("verify after re-encode"); goto out; }
