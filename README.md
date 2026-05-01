@@ -39,9 +39,13 @@ cmake --build build
 ## 安装
 
 ```sh
-cp pam_tpm_ecc.so /lib/security/
-chmod 755 /lib/security/pam_tpm_ecc.so
+cmake --install build --prefix /
+# 或分步：
+cmake --install build --prefix /usr      # GNU/Linux 风格
+cmake --install build --prefix /usr/local  # BSD 风格
 ```
+
+产物安装到 `<prefix>/lib/security/pam_tpm_ecc.so`。
 
 ## PAM 配置
 
