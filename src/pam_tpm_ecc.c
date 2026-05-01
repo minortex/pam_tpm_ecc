@@ -66,34 +66,36 @@ tpm_error_string(TSS2_RC rc)
     /* Strip TSS layer bits: keep TPM_RC in lower 16 bits */
     uint16_t tpm_rc = (uint16_t)(rc & 0xFFFFU);
 
-    /*
-     * TPM format-1 errors encode the session/handle/parameter in the
-     * upper bits.  Mask down to the format-0 error code for matching.
-     * Format-1: bit 7 = 1, bits 6:0 = error number.
-     * Format-0: bit 7 = 0, bits 6:0 = error number.
-     */
-    uint8_t code = (uint8_t)(tpm_rc & 0x007FU);
+    /* TPM Format-1 errors (bit 7 is 1) */
+    if (tpm_rc & 0x0080) {
+        /* Format-1 error number is in the lower 6 bits */
+        uint8_t code = (uint8_t)(tpm_rc & 0x003F);
 
-    switch (code) {
-    case 0x001:  return "TPM: auth failure — wrong PIN or auth value";
-    case 0x005:  return "TPM: not initialized (missing Startup)";
-    case 0x008:  return "TPM: disabled";
-    case 0x01B:  return "TPM: scheme unsupported by key";
-    case 0x02C:  return "TPM: dictionary attack lockout — TPM locked, try again later";
-    case 0x08B:  return "TPM: handle not found — key may have been evicted";
-    case 0x09A:  return "TPM: auth value or salt too long";
+        switch (code) {
+        case 0x0E: return "TPM: auth failure — wrong PIN or auth value"; /* TPM_RC_AUTH_FAIL */
+        case 0x0B: return "TPM: handle not found — key may have been evicted"; /* TPM_RC_HANDLE */
+        case 0x1A: return "TPM: auth value or salt too long"; /* TPM_RC_VALUE */
+        case 0x1B: return "TPM: scheme unsupported by key"; /* TPM_RC_SCHEME */
+        }
+    } else {
+        /* TPM Format-0 errors — matched exactly */
+        switch (tpm_rc) {
+        case 0x0100: return "TPM: not initialized (missing Startup)"; /* TPM2_RC_INITIALIZE */
+        case 0x0120: return "TPM: disabled"; /* TPM2_RC_DISABLED */
+        case 0x0921: return "TPM: DA lockout — TPM locked, try again later"; /* TPM2_RC_LOCKOUT */
+        }
     }
 
     /* TSS2 layer errors */
     switch (rc & 0x00FF0000U) {
-    case 0x00080000U:
+    case 0x00080000U: /* TSS2_RESMGR_RC_LAYER */
         switch (rc & 0xFFFFU) {
         case 5: return "RM: bad reference — check key_handle and TCTI";
         }
         break;
-    case 0x00070000U:
+    case 0x00070000U: /* TSS2_ESYS_RC_LAYER */
         switch (rc & 0xFFFFU) {
-        case 0x000B: return "ESYS: parameter encryption failed (bad session symmetric algorithm)";
+        case 0x000B: return "ESYS: parameter encryption failed";
         case 0x0018: return "ESYS: resource handle does not exist";
         }
         break;
