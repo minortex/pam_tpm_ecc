@@ -1,4 +1,6 @@
-# pam_tpm_ecc — TPM ECDSA PAM authentication module
+# pam_tpm_ecc
+
+TPM ECDSA PAM authentication module
 
 > ⚠️ Warning: This project is only for entertainment only, not for production environment.
 
@@ -7,7 +9,8 @@
 ## 目录结构
 
 ```
-c/
+pam_tpm_ecc
+
 ├── CMakeLists.txt           # 顶层 CMake
 ├── src/
 │   ├── CMakeLists.txt       # pam_tpm_ecc.so target
@@ -21,28 +24,24 @@ c/
 └── README.md                # 本文档
 ```
 
-## 编译
+## 
 
-```sh
-cd /home/texsd/Workdir/tpm/c
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-```
 
-产物：
-- `build/src/pam_tpm_ecc.so` — PAM 模块
-- `build/test/test_verify` — 单元测试
-- `build/test/tpm_sign_test` — ESYS 诊断工具
+## 编译安装
+
+ArchLinux：使用项目下的`PKGBUILD`
+
+---
+
+手动：
 
 **依赖：** `cmake >= 3.16` `tpm2-tss >= 4.0` `openssl >= 1.1` `libpam` `pkg-config`
 
-## 安装
-
-- ArchLinux：使用项目下的`PKGBUILD`
-
-- 手动：
-
 ```sh
+cd /home/texsd/Workdir/tpm/c
+cmake -B build
+cmake --build build
+
 cmake --install build --prefix /
 # 或分步：
 cmake --install build --prefix /usr      # GNU/Linux 风格
@@ -51,7 +50,42 @@ cmake --install build --prefix /usr/local  # BSD 风格
 
 产物安装到 `<prefix>/lib/security/pam_tpm_ecc.so`。
 
-## PAM 配置
+## 配置
+
+### TPM 密钥生成
+
+创建 ecc 的主密钥：
+```bash
+tpm2_createprimary -C o -G ecc -c ecc_primary.ctx
+```
+
+创建一个签名的对象：
+
+```bash
+tpm2_create \
+  -C ecc_primary.ctx \
+  -G ecc256:ecdsa \
+  -u ecc.pub \
+  -r ecc.priv \
+  -p 123456
+```
+
+加载：
+
+```bash
+tpm2_load \
+  -C ecc_primary.ctx \
+  -u ecc.pub \
+  -r ecc.priv \
+  -c ecc.ctx
+```
+
+持久化：
+```bash
+sudo tpm2_evictcontrol -C o -c ecc.ctx 0x81020000
+```
+
+### PAM 配置
 
 在 `/etc/pam.d/<service>` 中添加：
 
@@ -59,7 +93,7 @@ cmake --install build --prefix /usr/local  # BSD 风格
 auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
 ```
 
-### 参数
+**参数列表**：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
@@ -67,13 +101,33 @@ auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
 | `pubkey=` | 是 | ECC P-256 公钥 PEM 文件路径 |
 | `tcti=` | 否 | TCTI 设备字符串，默认 `device:/dev/tpmrm0` |
 
-### 示例
+添加到**系统认证**：
 
 ```sh
-# sudo 使用 TPM 认证
-# /etc/pam.d/sudo:
-auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
-auth required   pam_unix.so
+# /etc/pam.d/system-auth:
+auth       required                    pam_faillock.so      preauth
+auth       [success=3 default=ignore]  pam_tpm_ecc.so       key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem
+-auth      [success=2 default=ignore]  pam_systemd_home.so
+auth       [success=1 default=bad]     pam_unix.so          try_first_pass nullok
+auth       [default=die]               pam_faillock.so      authfail
+...
+```
+
+### 特殊应用配置
+
+**polkit**
+
+这个鉴权门户是强隔离的，提权调用的是他的 helper，需要手动把 tpm 挂载到对应的隔离环境。
+
+```bash
+systemctl edit polkit-agent-helper@
+```
+
+添加如下内容：
+```ini
+[Service]
+DeviceAllow=/dev/tpmrm0 rw
+BindPaths=/dev/tpmrm0
 ```
 
 ## 认证流程
@@ -116,7 +170,7 @@ PAM 弹出提示
 | 临时文件 | mktemp 生成 challenge/sig 文件 | 纯内存操作 |
 | PIN 安全 | 匿名管道，无法 mlock | mlock 锁页 + sec_zero |
 | 子进程 | fork + exec tpm2_sign + openssl | 进程内直连 TPM |
-| 错误处理 | `|| exit 1`，无细粒度日志 | 每个 TSS2/OpenSSL 调用都有 syslog 日志 |
+| 错误处理 | `exit 1`，无细粒度日志 | 每个 TSS2/OpenSSL 调用都有 syslog 日志 |
 | 依赖 | bash、tpm2-tools、openssl CLI | 仅动态库 |
 
 ### tpm2-tss 4.x null validation ticket 的坑
@@ -137,8 +191,6 @@ TPMT_TK_HASHCHECK null_ticket = {
 tpm2-tools 的做法相同：先调 `tpm2_hash` 拿到 SHA256 哈希 + 真实验证票据，再传哈希给 Sign。
 
 ## 测试（没怎么做）
-
-### 运行
 
 ```sh
 # 单元测试 (无需 TPM)
