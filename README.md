@@ -1,8 +1,8 @@
-# pam_tpm_ecc — TPM ECDSA PAM 认证模块
+# pam_tpm_ecc — TPM ECDSA PAM authentication module
+
+> ⚠️ Warning: This project is only for entertainment only, not for production environment.
 
 用 TPM 持久化 ECC 密钥做 challenge-response 认证的 PAM 模块。
-用 C 语言重写 `pam_tpm_ecc.sh`，全程内存安全，通过 TSS2 ESYS API 直连 TPM，
-不再依赖外部命令，无临时文件。
 
 ## 目录结构
 
@@ -38,6 +38,10 @@ cmake --build build
 
 ## 安装
 
+- ArchLinux：使用项目下的`PKGBUILD`
+
+- 手动：
+
 ```sh
 cmake --install build --prefix /
 # 或分步：
@@ -52,7 +56,7 @@ cmake --install build --prefix /usr/local  # BSD 风格
 在 `/etc/pam.d/<service>` 中添加：
 
 ```
-auth sufficient pam_tpm_ecc.so key_handle=0x81020001 pubkey=/home/texsd/Workdir/tpm/pub.pem
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
 ```
 
 ### 参数
@@ -68,14 +72,14 @@ auth sufficient pam_tpm_ecc.so key_handle=0x81020001 pubkey=/home/texsd/Workdir/
 ```sh
 # sudo 使用 TPM 认证
 # /etc/pam.d/sudo:
-auth sufficient pam_tpm_ecc.so key_handle=0x81020001 pubkey=/path/to/pub.pem
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
 auth required   pam_unix.so
 ```
 
 ## 认证流程
 
 ```
-PAM 弹出 "TPM PIN:" 提示
+PAM 弹出提示
   → 用户输入 PIN，mlock 锁定内存页，永不写入磁盘
   → OpenSSL RAND_bytes 生成 32 字节随机 challenge
   → SHA256(challenge) 预哈希
@@ -132,7 +136,7 @@ TPMT_TK_HASHCHECK null_ticket = {
 
 tpm2-tools 的做法相同：先调 `tpm2_hash` 拿到 SHA256 哈希 + 真实验证票据，再传哈希给 Sign。
 
-## 测试
+## 测试（没怎么做）
 
 ### 运行
 
@@ -147,55 +151,6 @@ test/test.sh <TPM_PIN>
 
 # 完整集成测试 (含 pamtester 端到端 PAM 认证)
 sudo test/test.sh <TPM_PIN>
-```
-
-### 测试结果 (全部 20 项通过)
-
-```
-=== pam_tpm_ecc Integration Tests ===
-
-[1] Environment checks
-  PASS  TPM device present
-  PASS  TPM responds
-  PASS  pubkey PEM exists
-
-[2] PAM module symbols
-  PASS  .so exists
-  PASS    exported: pam_sm_authenticate
-  PASS    exported: pam_sm_setcred
-  PASS    exported: pam_sm_acct_mgmt
-  PASS    exported: pam_sm_open_session
-  PASS    exported: pam_sm_close_session
-  PASS    exported: pam_sm_chauthtok
-
-[3] TPM sign + OpenSSL verify
-  PASS  TPM sign (with PIN)
-  PASS  OpenSSL verify
-  PASS  wrong challenge → rejected
-  PASS  corrupted signature → rejected
-
-[4] PAM module end-to-end (pamtester)
-  PASS  PAM service config created
-  PASS  pamtester authenticate
-  PASS  wrong PIN → rejected by PAM module
-
-[5] Shared library health
-  PASS  all shared library dependencies resolved
-  PASS  GNU_STACK: no-execute (NX)
-  PASS  Full RELRO (BIND_NOW)
-
-────────────────────────────────
-Results: 20 passed
-```
-
-### C 单元测试 (5/5)
-
-```
-raw r||s → DER → verify roundtrip         PASS
-wrong challenge → verify fails             PASS
-corrupted signature → verify fails         PASS
-r component w/ leading zero → still valid  PASS
-non-existent PEM file → BIO_new_file fails PASS
 ```
 
 ## 调试
