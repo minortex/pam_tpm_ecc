@@ -6,7 +6,7 @@ add_library(pam_tpm_ecc SHARED
 
 target_compile_definitions(pam_tpm_ecc PRIVATE
     _GNU_SOURCE
-    $<$<CONFIG:Release>:_FORTIFY_SOURCE=2>
+    _FORTIFY_SOURCE=2
 )
 
 target_include_directories(pam_tpm_ecc PRIVATE
@@ -28,6 +28,5 @@ set_target_properties(pam_tpm_ecc PROPERTIES
     SUFFIX ".so"
 )
 
-install(TARGETS pam_tpm_ecc
-    LIBRARY DESTINATION lib/security
-)
+# install target (optional — uncomment to use with cmake --install)
+install(TARGETS pam_tpm_ecc LIBRARY DESTINATION /usr/lib/security)

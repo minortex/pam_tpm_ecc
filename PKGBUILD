@@ -1,6 +1,6 @@
 # Maintainer: minortex <texsd dot tt29 at outlook com>
 pkgname=pam_tpm_ecc-git
-pkgver=0.0.1+r9.0a3133b
+pkgver=0.0.1+r9.1b8df91
 pkgrel=1
 pkgdesc="PAM module for TPM2 ECC authentication"
 arch=('x86_64' 'aarch64')
