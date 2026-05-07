@@ -111,11 +111,25 @@ auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem
 | `pubkey=` | 是 | 对应 P-256 SPKI PEM 公钥 |
 | `tcti=` | 否 | TCTI 字符串，默认 `device:/dev/tpmrm0` |
 
-带自定义 TCTI：
+不指定 `tcti=` 时模块只会使用默认的 `device:/dev/tpmrm0`，不会自动 fallback 到
+`tabrmd` / `tpm2-abrmd`。
+
+直接访问 TPM 设备：
 
 ```pam
 auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem tcti=device:/dev/tpmrm0
 ```
+
+通过 `tpm2-abrmd` 访问 TPM，避免调用方进程直接打开 `/dev/tpmrm0`：
+
+```pam
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem tcti=tabrmd
+```
+
+`tabrmd` 默认使用 system D-Bus 上的 `com.intel.tss2.Tabrmd`。在支持 D-Bus
+activation 的发行版配置中，第一次连接 `tabrmd` TCTI 时可能会自动启动
+`tpm2-abrmd`，所以即使事先没有手动 `systemctl start tpm2-abrmd`，调用模块时也可能看到
+`tpm2-abrmd` 被拉起。
 
 ## 诊断工具
 
@@ -190,7 +204,8 @@ readelf -l target/release/libpam_tpm_ecc.so | grep -A1 GNU_STACK
 
 ## polkit
 
-polkit helper 通常在隔离环境中运行，需要显式允许访问 TPM 设备：
+polkit helper 通常在隔离环境中运行。如果使用默认的 `device:/dev/tpmrm0`，需要显式允许
+helper 访问 TPM 设备：
 
 ```sh
 systemctl edit polkit-agent-helper@
@@ -201,3 +216,6 @@ systemctl edit polkit-agent-helper@
 DeviceAllow=/dev/tpmrm0 rw
 BindPaths=/dev/tpmrm0
 ```
+
+如果 PAM 配置改用 `tcti=tabrmd`，helper 不需要直接访问 `/dev/tpmrm0`；TPM 设备访问由
+`tpm2-abrmd` 进程完成。此时需要确保 `tpm2-abrmd` 可通过 system D-Bus 启动或已经运行。
