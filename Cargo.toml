@@ -1,0 +1,37 @@
+[package]
+name = "pam_tpm_ecc"
+version = "0.1.0"
+edition = "2021"
+description = "PAM module for TPM 2.0 ECC challenge-response authentication"
+license = "LGPL-2.1-only"
+repository = "https://github.com/minortex/pam_tpm_ecc"
+
+[lib]
+name = "pam_tpm_ecc"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "tpm_sign_test"
+path = "src/bin/tpm_sign_test.rs"
+
+[dependencies]
+nonstick = "0.1"
+tss-esapi = "7.7"
+p256 = { version = "0.13", features = ["ecdsa"] }
+ecdsa = "0.16"
+sha2 = "0.11"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }
+base64ct = { version = "1.6", features = ["alloc"] }
+thiserror = "2.0"
+libc = "0.2"
+
+[dev-dependencies]
+p256 = { version = "0.13", features = ["ecdsa", "arithmetic"] }
+rand = "0.8"
+
+[profile.release]
+lto = true
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+strip = "symbols"

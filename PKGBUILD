@@ -1,19 +1,20 @@
 # Maintainer: minortex <texsd dot tt29 at outlook com>
 pkgname=pam_tpm_ecc-git
-pkgver=0.0.1+r9.1b8df91
+pkgver=0.1.0.r10.gcd6939b
 pkgrel=1
 pkgdesc="PAM module for TPM2 ECC authentication"
 arch=('x86_64' 'aarch64')
 url="https://github.com/minortex/pam_tpm_ecc"
-license=('LGPL')
+license=('LGPL-2.1-only')
 depends=(
+  'gcc-libs'
+  'glibc'
   'tpm2-tss>=4.0'
-  'openssl>=1.1'
   'pam'
 )
 makedepends=(
-  'cmake>=3.16'
-  'pkg-config'
+  'cargo'
+  'pkgconf'
   'git'
 )
 provides=("pam_tpm_ecc")
@@ -23,23 +24,24 @@ sha256sums=('SKIP')
 
 pkgver() {
   cd "${srcdir}/${pkgname}"
-  printf "0.0.1+r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+  printf "0.1.0.r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+  cd "${srcdir}/${pkgname}"
+  cargo fetch --locked
 }
 
 build() {
-  cd ${srcdir}/${pkgname}
-  # 修复 $srcdir 引用警告：将源码绝对路径映射为 "."
-  export CFLAGS+=" -ffile-prefix-map=${srcdir}=."
-
-  # 使用 -Wno-dev 减少 CMake 自身的警告
-  cmake -B build -S . \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_INSTALL_PREFIX=/usr \
-    -Wno-dev
-  cmake --build build
+  cd "${srcdir}/${pkgname}"
+  cargo build --release --frozen
 }
 
 package() {
-  cd ${srcdir}/${pkgname}
-  DESTDIR="${pkgdir}" cmake --install build
+  cd "${srcdir}/${pkgname}"
+  install -Dm755 target/release/libpam_tpm_ecc.so \
+    "${pkgdir}/usr/lib/security/pam_tpm_ecc.so"
+  install -Dm755 target/release/tpm_sign_test \
+    "${pkgdir}/usr/bin/tpm_sign_test"
+  install -Dm644 README.md "${pkgdir}/usr/share/doc/pam_tpm_ecc/README.md"
 }

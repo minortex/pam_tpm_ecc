@@ -1,67 +1,76 @@
 # pam_tpm_ecc
 
-TPM ECDSA PAM authentication module
+用 TPM 2.0 持久化 ECC 密钥做 challenge-response 认证的 PAM 模块。
 
-> ⚠️ Warning: This project is only for entertainment only, not for production environment.
+> Warning: This project is for experimentation only, not for production environments.
 
-用 TPM 持久化 ECC 密钥做 challenge-response 认证的 PAM 模块。
+## 功能
 
-## 目录结构
+- Rust PAM module，安装后模块名仍为 `pam_tpm_ecc.so`
+- TPM 2.0 ECDSA/P-256 签名认证
+- 支持 TPM key auth value，也支持空 PIN 的 key
+- 公钥文件使用 `open` 后 `fstat` 校验，避免 TOCTOU
+- PIN、challenge、signature 使用 `mlock` 尝试锁页，并在释放时 zeroize
+- release 构建启用 LTO、`panic = abort`、Full RELRO / BIND_NOW
+
+## 项目结构
 
 ```
 pam_tpm_ecc
-
-├── CMakeLists.txt           # 顶层 CMake
+├── Cargo.toml
+├── Cargo.lock
+├── PKGBUILD
 ├── src/
-│   ├── CMakeLists.txt       # pam_tpm_ecc.so target
-│   └── pam_tpm_ecc.c        # PAM 模块源码 (~500 行)
-├── test/
-│   ├── CMakeLists.txt       # test_verify + tpm_sign_test targets
-│   ├── test_verify.c        # 纯 OpenSSL 单元测试 (5 用例, 无 TPM)
-│   ├── tpm_sign_test.c      # ESYS 签名独立诊断程序
-│   └── test.sh              # 集成测试脚本 (TPM + PAM + 安全属性)
-├── build/                   # CMake 输出 (gitignored)
-└── README.md                # 本文档
+│   ├── lib.rs              # PAM 入口和认证主流程
+│   ├── args.rs             # PAM 参数解析
+│   ├── pubkey.rs           # 公钥文件校验和 PEM 解析
+│   ├── crypto.rs           # challenge、SHA-256、P-256 ECDSA 验签
+│   ├── tpm.rs              # tss-esapi TPM 签名封装
+│   ├── secure.rs           # mlock + zeroize 缓冲区
+│   └── bin/tpm_sign_test.rs
+└── test/test.sh            # 集成测试脚本
 ```
 
-## 
+## 构建安装
 
-
-## 编译安装
-
-ArchLinux：使用项目下的`PKGBUILD`
-
----
-
-手动：
-
-**依赖：** `cmake >= 3.16` `tpm2-tss >= 4.0` `openssl >= 1.1` `libpam` `pkg-config`
+### Arch Linux
 
 ```sh
-cd /home/texsd/Workdir/tpm/c
-cmake -B build
-cmake --build build
-
-cmake --install build --prefix /
-# 或分步：
-cmake --install build --prefix /usr      # GNU/Linux 风格
-cmake --install build --prefix /usr/local  # BSD 风格
+makepkg -si
 ```
 
-产物安装到 `<prefix>/lib/security/pam_tpm_ecc.so`。
+`PKGBUILD` 会安装：
 
-## 配置
+- `/usr/lib/security/pam_tpm_ecc.so`
+- `/usr/bin/tpm_sign_test`
+- `/usr/share/doc/pam_tpm_ecc/README.md`
 
-### TPM 密钥生成
+### 手动安装
 
-创建 ecc 的主密钥：
-```bash
+构建依赖：
+
+- `cargo`
+- `pkgconf`
+- `tpm2-tss >= 4.0`
+- `pam`
+
+```sh
+cargo build --release --locked
+sudo install -Dm755 target/release/libpam_tpm_ecc.so /usr/lib/security/pam_tpm_ecc.so
+sudo install -Dm755 target/release/tpm_sign_test /usr/bin/tpm_sign_test
+```
+
+## TPM 密钥
+
+创建 ECC primary key：
+
+```sh
 tpm2_createprimary -C o -G ecc -c ecc_primary.ctx
 ```
 
-创建一个签名的对象：
+创建 ECDSA/P-256 签名对象：
 
-```bash
+```sh
 tpm2_create \
   -C ecc_primary.ctx \
   -G ecc256:ecdsa \
@@ -70,153 +79,125 @@ tpm2_create \
   -p 123456
 ```
 
-加载：
+加载并持久化：
 
-```bash
-tpm2_load \
-  -C ecc_primary.ctx \
-  -u ecc.pub \
-  -r ecc.priv \
-  -c ecc.ctx
-```
-
-持久化：
-```bash
+```sh
+tpm2_load -C ecc_primary.ctx -u ecc.pub -r ecc.priv -c ecc.ctx
 sudo tpm2_evictcontrol -C o -c ecc.ctx 0x81020000
 ```
 
-### PAM 配置
+导出 PEM 公钥示例：
+
+```sh
+tpm2_readpublic -c 0x81020000 -f pem -o /tmp/tpm-ecc.pub.pem
+sudo install -o root -g root -m 0644 /tmp/tpm-ecc.pub.pem /etc/tpm-ecc.pub.pem
+```
+
+公钥文件必须是普通文件、root 拥有，并且权限不能比 `0644` 更宽。
+
+## PAM 配置
 
 在 `/etc/pam.d/<service>` 中添加：
 
-```
-auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-pub.pem
+```pam
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem
 ```
 
-**参数列表**：
+参数：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
-| `key_handle=` | 是 | TPM 持久化 ECC 密钥句柄，支 16/10 进制 |
-| `pubkey=` | 是 | ECC P-256 公钥 PEM 文件路径 |
-| `tcti=` | 否 | TCTI 设备字符串，默认 `device:/dev/tpmrm0` |
+| `key_handle=` | 是 | TPM 持久化 ECC key handle，支持十进制或 `0x...` |
+| `pubkey=` | 是 | 对应 P-256 SPKI PEM 公钥 |
+| `tcti=` | 否 | TCTI 字符串，默认 `device:/dev/tpmrm0` |
 
-添加到**系统认证**：
+带自定义 TCTI：
+
+```pam
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem tcti=device:/dev/tpmrm0
+```
+
+## 诊断工具
 
 ```sh
-# /etc/pam.d/system-auth:
-auth       required                    pam_faillock.so      preauth
-auth       [success=3 default=ignore]  pam_tpm_ecc.so       key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem
--auth      [success=2 default=ignore]  pam_systemd_home.so
-auth       [success=1 default=bad]     pam_unix.so          try_first_pass nullok
-auth       [default=die]               pam_faillock.so      authfail
-...
+tpm_sign_test 123456 0x81020000 device:/dev/tpmrm0
 ```
 
-### 特殊应用配置
+参数顺序：
 
-**polkit**
-
-这个鉴权门户是强隔离的，提权调用的是他的 helper，需要手动把 tpm 挂载到对应的隔离环境。
-
-```bash
-systemctl edit polkit-agent-helper@
+```text
+tpm_sign_test [PIN] [key_handle] [tcti]
 ```
 
-添加如下内容：
-```ini
-[Service]
-DeviceAllow=/dev/tpmrm0 rw
-BindPaths=/dev/tpmrm0
+如果 key 没有 auth value，PIN 参数传空字符串：
+
+```sh
+tpm_sign_test "" 0x81020000 device:/dev/tpmrm0
 ```
 
 ## 认证流程
 
 ```
-PAM 弹出提示
-  → 用户输入 PIN，mlock 锁定内存页，永不写入磁盘
-  → OpenSSL RAND_bytes 生成 32 字节随机 challenge
-  → SHA256(challenge) 预哈希
-  → ESYS API 与 TPM 直连：tctildr → Esys_Initialize → Startup
-  → Esys_TR_FromTPMPublic 获取持久化密钥句柄
-  → Esys_TR_SetAuth 传入 PIN
-  → Esys_Sign 对 SHA256 哈希做 ECDSA 签名
-  → 提取 raw r||s，填充到 32+32 字节
-  → 转换为 DER 编码
-  → OpenSSL EVP_DigestVerify 验证签名
-  → PAM_SUCCESS / PAM_AUTH_ERR
+parse PAM args
+  -> open/fstat/read root-owned public key PEM
+  -> prompt PIN through PAM conversation
+  -> mlock PIN/challenge/signature buffers
+  -> generate 32-byte challenge
+  -> SHA256(challenge)
+  -> initialize tss-esapi context and TPM startup
+  -> TR_FromTPMPublic(key_handle)
+  -> TR_SetAuth(PIN)
+  -> Sign(SHA256(challenge), ECDSA/SHA256, null HASHCHECK ticket)
+  -> extract padded raw r||s
+  -> verify original challenge with p256 ECDSA/SHA-256
+  -> PAM_SUCCESS or PAM_AUTH_ERR
 ```
 
-全程无临时文件，敏感数据 (PIN、challenge、签名) 在释放前 `sec_zero` 强制清零并 `munlock` 解锁。
+TPM 签名输入是 `SHA256(challenge)`；验证时对原始 `challenge` 做 ECDSA/SHA-256 验签，两边最终验证的是同一个 digest。
 
-## 内存安全设计
+## 测试
 
-| 措施 | 说明 |
-|---|---|
-| `mlock` / `munlock` | PIN、challenge、签名三块缓冲区锁页在物理内存，禁止交换到磁盘 |
-| `sec_zero` | `volatile` 屏障强制清零，编译器无法优化掉 |
-| bounds check | 所有 `memcpy` 操作前检查目标缓冲区大小 |
-| 无危险函数 | 零 `strcpy` / `sprintf` / `gets`，只用 `memcpy`、`strncmp`、`strnlen`、`strtoul` |
-| 编译加固 | `-fstack-protector-strong` `-D_FORTIFY_SOURCE=2` `-Wl,-z,relro,-z,now` |
-| 错误路径 | 任何步骤失败 → 统一 `goto cleanup` 标签 → 清零解锁释放 → 返回错误码 |
-| `explicit_bzero` | PIN 从 PAM conversation 获取后立即清零原始缓冲区 |
-
-## 关键技术决策
-
-### 为什么用 ESYS API 而非调用外部命令
-
-| | Shell 脚本 | C + ESYS |
-|---|---|---|
-| 临时文件 | mktemp 生成 challenge/sig 文件 | 纯内存操作 |
-| PIN 安全 | 匿名管道，无法 mlock | mlock 锁页 + sec_zero |
-| 子进程 | fork + exec tpm2_sign + openssl | 进程内直连 TPM |
-| 错误处理 | `exit 1`，无细粒度日志 | 每个 TSS2/OpenSSL 调用都有 syslog 日志 |
-| 依赖 | bash、tpm2-tools、openssl CLI | 仅动态库 |
-
-### tpm2-tss 4.x null validation ticket 的坑
-
-在 tpm2-tss 4.x 中，`Esys_Sign` 的 `validation` 参数不能传 `NULL`（会触发
-`TSS2_RESMGR_RC_BAD_REFERENCE`），必须传一个构造好的 ticket：
-
-```c
-TPMT_TK_HASHCHECK null_ticket = {
-    .tag       = TPM2_ST_HASHCHECK,
-    .hierarchy = TPM2_RH_NULL
-};
-```
-
-但更关键的是：带 null ticket 时，**TPM 把 digest 当作已哈希数据直接签名**，不再做二次哈希。
-因此必须自己用 `SHA256(challenge)` 预哈希，再把 32 字节哈希值传给 `Esys_Sign`。
-
-tpm2-tools 的做法相同：先调 `tpm2_hash` 拿到 SHA256 哈希 + 真实验证票据，再传哈希给 Sign。
-
-## 测试（没怎么做）
+单元测试不需要 TPM：
 
 ```sh
-# 单元测试 (无需 TPM)
-ctest --test-dir build -R unit
-# 或直接运行
-./build/test/test_verify
-
-# 集成测试 (TPM sign + OpenSSL verify + PAM 符号 + 安全属性)
-test/test.sh <TPM_PIN>
-
-# 完整集成测试 (含 pamtester 端到端 PAM 认证)
-sudo test/test.sh <TPM_PIN>
+cargo test
 ```
 
-## 调试
-
-日志写入 syslog：
+构建 release PAM 模块：
 
 ```sh
-journalctl -f -t pamtester | grep pam_tpm
+cargo build --release --locked
 ```
 
-模块在各失败点都会记录具体的 `TSS2_RC` / OpenSSL 错误码。
+集成测试需要 TPM、`tpm2-tools`、`openssl`，PAM 端到端测试还需要 `pamtester`：
 
-## 前置条件
+```sh
+sudo test/test.sh 123456
+```
 
-1. TPM 2.0 物理设备或模拟器
-2. 持久化的非受限 ECC P-256 签名密钥 (`tpm2_create` + `tpm2_evictcontrol`)
-3. 对应公钥导出为 X.509 SubjectPublicKeyInfo PEM 格式
+检查导出符号：
+
+```sh
+nm -D target/release/libpam_tpm_ecc.so | grep pam_sm_
+```
+
+检查安全属性：
+
+```sh
+readelf -d target/release/libpam_tpm_ecc.so | grep BIND_NOW
+readelf -l target/release/libpam_tpm_ecc.so | grep -A1 GNU_STACK
+```
+
+## polkit
+
+polkit helper 通常在隔离环境中运行，需要显式允许访问 TPM 设备：
+
+```sh
+systemctl edit polkit-agent-helper@
+```
+
+```ini
+[Service]
+DeviceAllow=/dev/tpmrm0 rw
+BindPaths=/dev/tpmrm0
+```

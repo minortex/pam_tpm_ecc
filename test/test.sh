@@ -14,9 +14,9 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
-SO="${0%/*}/../build/src/pam_tpm_ecc.so"
+SO="${0%/*}/../target/release/libpam_tpm_ecc.so"
 PAM_MODULE="pam_tpm_ecc.so"
-PAM_INSTALL="/lib/security/${PAM_MODULE}"
+PAM_INSTALL="/usr/lib/security/${PAM_MODULE}"
 KEY_HANDLE="0x81020001"
 PUBKEY="/home/texsd/Workdir/tpm/pub.pem"
 TCTI="device:/dev/tpmrm0"
@@ -81,7 +81,7 @@ echo ""
 echo "[2] PAM module symbols"
 
 if [ ! -f "$SO" ]; then
-  fail ".so exists" "$SO not built — run make first"
+  fail ".so exists" "$SO not built — run cargo build --release first"
   exit 1
 fi
 pass ".so exists"
@@ -178,13 +178,13 @@ if ! command -v pamtester >/dev/null 2>&1; then
   skip "pamtester not found" "cannot test PAM integration"
 elif [ ! -w /etc/pam.d ]; then
   skip "no write access to /etc/pam.d" "run 'sudo ./test.sh $PIN' for full PAM test"
-elif [ ! -w /lib/security ]; then
-  skip "no write access to /lib/security" "cannot install PAM module"
+elif [ ! -w /usr/lib/security ]; then
+  skip "no write access to /usr/lib/security" "cannot install PAM module"
 else
   # Install module if not already installed
   if [ ! -f "$PAM_INSTALL" ]; then
     cp "$SO" "$PAM_INSTALL"
-    echo "  INFO   installed $PAM_MODULE to /lib/security/"
+    echo "  INFO   installed $PAM_MODULE to /usr/lib/security/"
   fi
   # Create temporary PAM service config
   cat >"$PAM_CONF" <<PAMEOF
