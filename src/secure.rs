@@ -1,5 +1,4 @@
 use std::ops::{Deref, DerefMut};
-use std::ptr;
 
 use zeroize::Zeroize;
 
@@ -58,24 +57,4 @@ fn try_mlock(bytes: &mut [u8]) -> bool {
     }
 
     unsafe { libc::mlock(bytes.as_ptr().cast::<libc::c_void>(), bytes.len()) == 0 }
-}
-
-pub unsafe fn zeroize_c_string(ptr: *mut libc::c_char) {
-    if ptr.is_null() {
-        return;
-    }
-
-    let mut len = 0usize;
-    while *ptr.add(len) != 0 {
-        len += 1;
-    }
-
-    secure_zero(ptr.cast::<u8>(), len);
-}
-
-pub unsafe fn secure_zero(ptr: *mut u8, len: usize) {
-    for idx in 0..len {
-        ptr::write_volatile(ptr.add(idx), 0);
-    }
-    std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
 }
