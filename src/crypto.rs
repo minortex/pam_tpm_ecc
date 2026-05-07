@@ -1,6 +1,3 @@
-use std::fs::File;
-use std::io::{self, Read};
-
 use p256::ecdsa::signature::Verifier;
 use p256::ecdsa::{Signature, VerifyingKey};
 use sha2::{Digest, Sha256};
@@ -11,8 +8,8 @@ pub const RAW_SIGNATURE_SIZE: usize = 64;
 
 #[derive(Debug, Error)]
 pub enum CryptoError {
-    #[error("failed to read random challenge: {0}")]
-    Random(io::Error),
+    #[error("failed to generate random challenge: {0}")]
+    Random(getrandom::Error),
     #[error("invalid P-256 ECDSA signature")]
     InvalidSignature,
     #[error("signature mismatch")]
@@ -21,9 +18,7 @@ pub enum CryptoError {
 
 pub fn generate_challenge() -> Result<[u8; CHALLENGE_SIZE], CryptoError> {
     let mut challenge = [0u8; CHALLENGE_SIZE];
-    File::open("/dev/urandom")
-        .and_then(|mut file| file.read_exact(&mut challenge))
-        .map_err(CryptoError::Random)?;
+    getrandom::fill(&mut challenge).map_err(CryptoError::Random)?;
     Ok(challenge)
 }
 

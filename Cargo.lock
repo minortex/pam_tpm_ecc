@@ -500,6 +500,7 @@ version = "0.1.0"
 dependencies = [
  "base64ct",
  "ecdsa",
+ "getrandom 0.4.2",
  "libc",
  "nonstick",
  "p256",
