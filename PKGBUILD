@@ -10,6 +10,7 @@ depends=(
   'gcc-libs'
   'glibc'
   'tpm2-tss>=4.0'
+  'tpm2-abrmd'
   'pam'
 )
 makedepends=(
