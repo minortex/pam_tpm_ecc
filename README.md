@@ -28,7 +28,13 @@ pam_tpm_ecc
 │   ├── tpm.rs              # tss-esapi TPM 签名封装
 │   ├── secure.rs           # mlock + zeroize 缓冲区
 │   └── bin/tpm_sign_test.rs
-└── test/test.sh            # 集成测试脚本
+└── test/
+    ├── README.md
+    ├── test.sh                         # 兼容入口，转发到硬件集成测试
+    ├── lib/common.sh                   # 测试公共函数
+    └── integration/
+        ├── hardware.sh                 # 真实 TPM / 已配置 TCTI 集成测试
+        └── ibmswtpm2.sh                # IBM TPM simulator + tpm2-abrmd 集成测试
 ```
 
 ## 构建安装
@@ -210,10 +216,29 @@ cargo test
 cargo build --release --locked
 ```
 
-集成测试需要 TPM、`tpm2-tools`、`openssl`，PAM 端到端测试还需要 `pamtester`：
+真实 TPM 集成测试需要 TPM、`tpm2-tools`、`openssl`，PAM 端到端测试还需要
+`pamtester` 和 root 权限：
 
 ```sh
-sudo test/test.sh 123456
+sudo KEY_HANDLE=0x81020000 \
+  PUBKEY=/etc/tpm-ecc.pub.pem \
+  TCTI=device:/dev/tpmrm0 \
+  test/integration/hardware.sh 123456
+```
+
+CI/CD 可以使用 IBM TPM 2.0 simulator。脚本会启动 `tpm_server`，默认通过 session D-Bus
+启动 `tpm2-abrmd`，创建临时 ECC 签名 key，并通过 `tabrmd:bus_type=session` 运行集成测试：
+
+```sh
+test/integration/ibmswtpm2.sh 123456
+```
+
+如果 CI 环境不想经过 `tpm2-abrmd`，也可以直接使用 simulator 的 `mssim` TCTI：
+
+```sh
+SIM_USE_ABRMD=0 \
+  TEST_TCTI=mssim:host=127.0.0.1,port=2321 \
+  test/integration/ibmswtpm2.sh 123456
 ```
 
 检查导出符号：
