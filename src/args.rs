@@ -96,46 +96,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_required_and_default_tcti() {
-        let cfg = parse_args(&["key_handle=0x81020000", "pubkey=/etc/tpm.pub"]).unwrap();
+    fn parses_required_and_default_tcti() -> Result<(), ArgsError> {
+        let cfg = parse_args(&["key_handle=0x81020000", "pubkey=/etc/tpm.pub"])?;
         assert_eq!(cfg.key_handle, 0x8102_0000);
         assert_eq!(
             cfg.pubkey,
             PubkeyConfig::File(PathBuf::from("/etc/tpm.pub"))
         );
         assert_eq!(cfg.tcti, DEFAULT_TCTI);
+        Ok(())
     }
 
     #[test]
-    fn parses_pubkey_dir() {
+    fn parses_pubkey_dir() -> Result<(), ArgsError> {
         let cfg = parse_args(&[
             "key_handle=0x81020000",
             "pubkey_dir=/etc/security/pam_tpm_ecc/keys",
-        ])
-        .unwrap();
+        ])?;
         assert_eq!(
             cfg.pubkey,
             PubkeyConfig::Dir(PathBuf::from("/etc/security/pam_tpm_ecc/keys"))
         );
+        Ok(())
     }
 
     #[test]
-    fn parses_decimal_handle_and_custom_tcti() {
+    fn parses_decimal_handle_and_custom_tcti() -> Result<(), ArgsError> {
         let cfg = parse_args(&[
             "key_handle=2164391936",
             "pubkey=/etc/tpm.pub",
             "tcti=swtpm:host=127.0.0.1,port=2321",
-        ])
-        .unwrap();
+        ])?;
         assert_eq!(cfg.key_handle, 0x8102_0000);
         assert_eq!(cfg.tcti, "swtpm:host=127.0.0.1,port=2321");
+        Ok(())
     }
 
     #[test]
     fn rejects_invalid_handle() {
         assert_eq!(
-            parse_args(&["key_handle=wat", "pubkey=/etc/tpm.pub"]).unwrap_err(),
-            ArgsError::InvalidKeyHandle("wat".to_string())
+            parse_args(&["key_handle=wat", "pubkey=/etc/tpm.pub"]),
+            Err(ArgsError::InvalidKeyHandle("wat".to_string()))
         );
     }
 
@@ -146,9 +147,8 @@ mod tests {
                 "key_handle=0x81020000",
                 "pubkey=/etc/tpm.pub",
                 "pubkey_dir=/etc/security/pam_tpm_ecc/keys",
-            ])
-            .unwrap_err(),
-            ArgsError::ConflictingPubkey
+            ]),
+            Err(ArgsError::ConflictingPubkey)
         );
     }
 }

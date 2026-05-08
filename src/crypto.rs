@@ -50,13 +50,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verifies_matching_signature() {
+    fn verifies_matching_signature() -> Result<(), CryptoError> {
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = VerifyingKey::from(&signing_key);
         let challenge = b"challenge";
         let signature: Signature = signing_key.sign(challenge);
 
-        verify_challenge(&verifying_key, challenge, &signature.to_bytes()).unwrap();
+        verify_challenge(&verifying_key, challenge, &signature.to_bytes())
     }
 
     #[test]
