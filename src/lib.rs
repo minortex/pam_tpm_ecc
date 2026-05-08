@@ -6,14 +6,15 @@ mod tpm;
 
 use std::ffi::{CStr, OsStr};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
 
-use args::parse_args;
+use args::{parse_args, PubkeyConfig};
 use nonstick::{
     error, info, pam_export, warn, AuthnFlags, AuthtokAction, AuthtokFlags, BaseFlags, CredAction,
     ErrorCode, ModuleClient, PamModule, Result as PamResult,
 };
 use secure::SecureBuffer;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 struct TpmPamModule;
 pam_export!(TpmPamModule);
@@ -26,7 +27,11 @@ impl<M: ModuleClient> PamModule<M> for TpmPamModule {
                 Ok(())
             }
             Err((code, message)) => {
-                error!(handle, "{message}");
+                if code == ErrorCode::Ignore {
+                    info!(handle, "{message}");
+                } else {
+                    error!(handle, "{message}");
+                }
                 Err(code)
             }
         }
@@ -87,18 +92,21 @@ fn authenticate<M: ModuleClient>(
             )
         })?;
     let config = parse_args(&args).map_err(service_error)?;
-    let public_key = pubkey::load_public_key(&config.pubkey).map_err(service_error)?;
+    let public_key = load_configured_public_key(handle, &config.pubkey)?;
     let pin = prompt_pin(handle)?;
 
     let mut challenge = SecureBuffer::new(crypto::CHALLENGE_SIZE);
     if !challenge.locked() {
         warn!(handle, "mlock failed for challenge buffer; continuing");
     }
-    challenge.copy_from_slice(&crypto::generate_challenge().map_err(auth_error)?);
+    let challenge_bytes = Zeroizing::new(crypto::generate_challenge().map_err(auth_error)?);
+    challenge.copy_from_slice(challenge_bytes.as_ref());
 
-    let signature = tpm::sign_challenge(&config.tcti, config.key_handle, &pin, &challenge)
-        .map_err(auth_error)?;
-    let signature = SecureBuffer::from_slice(&signature);
+    let signature_bytes = Zeroizing::new(
+        tpm::sign_challenge(&config.tcti, config.key_handle, &pin, &challenge)
+            .map_err(auth_error)?,
+    );
+    let signature = SecureBuffer::from_slice(signature_bytes.as_ref());
     if !signature.locked() {
         warn!(handle, "mlock failed for signature buffer; continuing");
     }
@@ -106,11 +114,73 @@ fn authenticate<M: ModuleClient>(
     crypto::verify_challenge(&public_key, &challenge, &signature).map_err(auth_error)
 }
 
+fn load_configured_public_key<M: ModuleClient>(
+    handle: &mut M,
+    config: &PubkeyConfig,
+) -> Result<p256::ecdsa::VerifyingKey, (ErrorCode, String)> {
+    match config {
+        PubkeyConfig::File(path) => pubkey::load_public_key(path).map_err(service_error),
+        PubkeyConfig::Dir(dir) => {
+            let username = handle.username(None).map_err(|err| {
+                (
+                    err,
+                    "failed to get PAM username for pubkey_dir lookup".to_string(),
+                )
+            })?;
+            let path = user_pubkey_path(dir, username.as_bytes())?;
+            match pubkey::load_public_key(&path) {
+                Ok(key) => Ok(key),
+                Err(pubkey::PubkeyError::Open { path, source })
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    Err((
+                        ErrorCode::Ignore,
+                        format!(
+                            "no TPM public key configured for user at {}; ignoring module",
+                            path.display()
+                        ),
+                    ))
+                }
+                Err(err) => Err(service_error(err)),
+            }
+        }
+    }
+}
+
+fn user_pubkey_path(dir: &Path, username: &[u8]) -> Result<PathBuf, (ErrorCode, String)> {
+    let username = std::str::from_utf8(username).map_err(|_| {
+        (
+            ErrorCode::ServiceError,
+            "PAM username is not UTF-8; cannot use pubkey_dir".to_string(),
+        )
+    })?;
+
+    if !is_safe_username_component(username) {
+        return Err((
+            ErrorCode::ServiceError,
+            format!("PAM username is not safe for pubkey_dir lookup: {username:?}"),
+        ));
+    }
+
+    Ok(dir.join(format!("{username}.pem")))
+}
+
+fn is_safe_username_component(username: &str) -> bool {
+    !username.is_empty()
+        && username != "."
+        && username != ".."
+        && username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 fn prompt_pin<M: ModuleClient>(handle: &mut M) -> Result<SecureBuffer, (ErrorCode, String)> {
-    let mut pin_bytes = handle
-        .authtok(Some(OsStr::from_bytes(b"[TPM] authenticate: ")))
-        .map_err(|err| (err, "conversation failed".to_string()))?
-        .into_vec();
+    let mut pin_bytes = Zeroizing::new(
+        handle
+            .authtok(Some(OsStr::from_bytes(b"[TPM] authenticate: ")))
+            .map_err(|err| (err, "conversation failed".to_string()))?
+            .into_vec(),
+    );
 
     let pin = SecureBuffer::from_slice(&pin_bytes);
     pin_bytes.zeroize();

@@ -7,16 +7,24 @@ pub const DEFAULT_TCTI: &str = "device:/dev/tpmrm0";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub key_handle: u32,
-    pub pubkey: PathBuf,
+    pub pubkey: PubkeyConfig,
     pub tcti: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PubkeyConfig {
+    File(PathBuf),
+    Dir(PathBuf),
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ArgsError {
     #[error("key_handle= missing")]
     MissingKeyHandle,
-    #[error("pubkey= missing")]
+    #[error("pubkey= or pubkey_dir= missing")]
     MissingPubkey,
+    #[error("pubkey= and pubkey_dir= are mutually exclusive")]
+    ConflictingPubkey,
     #[error("invalid key_handle: {0}")]
     InvalidKeyHandle(String),
 }
@@ -24,6 +32,7 @@ pub enum ArgsError {
 pub fn parse_args(args: &[&str]) -> Result<Config, ArgsError> {
     let mut key_handle = None;
     let mut pubkey = None;
+    let mut pubkey_dir = None;
     let mut tcti = DEFAULT_TCTI.to_string();
 
     for arg in args {
@@ -34,6 +43,10 @@ pub fn parse_args(args: &[&str]) -> Result<Config, ArgsError> {
         } else if let Some(value) = arg.strip_prefix("pubkey=") {
             if !value.is_empty() {
                 pubkey = Some(PathBuf::from(value));
+            }
+        } else if let Some(value) = arg.strip_prefix("pubkey_dir=") {
+            if !value.is_empty() {
+                pubkey_dir = Some(PathBuf::from(value));
             }
         } else if let Some(value) = arg.strip_prefix("tcti=") {
             if !value.is_empty() {
@@ -47,9 +60,16 @@ pub fn parse_args(args: &[&str]) -> Result<Config, ArgsError> {
         return Err(ArgsError::MissingKeyHandle);
     }
 
+    let pubkey = match (pubkey, pubkey_dir) {
+        (Some(path), None) => PubkeyConfig::File(path),
+        (None, Some(path)) => PubkeyConfig::Dir(path),
+        (Some(_), Some(_)) => return Err(ArgsError::ConflictingPubkey),
+        (None, None) => return Err(ArgsError::MissingPubkey),
+    };
+
     Ok(Config {
         key_handle,
-        pubkey: pubkey.ok_or(ArgsError::MissingPubkey)?,
+        pubkey,
         tcti,
     })
 }
@@ -79,8 +99,24 @@ mod tests {
     fn parses_required_and_default_tcti() {
         let cfg = parse_args(&["key_handle=0x81020000", "pubkey=/etc/tpm.pub"]).unwrap();
         assert_eq!(cfg.key_handle, 0x8102_0000);
-        assert_eq!(cfg.pubkey, PathBuf::from("/etc/tpm.pub"));
+        assert_eq!(
+            cfg.pubkey,
+            PubkeyConfig::File(PathBuf::from("/etc/tpm.pub"))
+        );
         assert_eq!(cfg.tcti, DEFAULT_TCTI);
+    }
+
+    #[test]
+    fn parses_pubkey_dir() {
+        let cfg = parse_args(&[
+            "key_handle=0x81020000",
+            "pubkey_dir=/etc/security/pam_tpm_ecc/keys",
+        ])
+        .unwrap();
+        assert_eq!(
+            cfg.pubkey,
+            PubkeyConfig::Dir(PathBuf::from("/etc/security/pam_tpm_ecc/keys"))
+        );
     }
 
     #[test]
@@ -100,6 +136,19 @@ mod tests {
         assert_eq!(
             parse_args(&["key_handle=wat", "pubkey=/etc/tpm.pub"]).unwrap_err(),
             ArgsError::InvalidKeyHandle("wat".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_conflicting_pubkey_sources() {
+        assert_eq!(
+            parse_args(&[
+                "key_handle=0x81020000",
+                "pubkey=/etc/tpm.pub",
+                "pubkey_dir=/etc/security/pam_tpm_ecc/keys",
+            ])
+            .unwrap_err(),
+            ArgsError::ConflictingPubkey
         );
     }
 }

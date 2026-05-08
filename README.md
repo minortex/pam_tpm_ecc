@@ -95,6 +95,14 @@ sudo install -o root -g root -m 0644 /tmp/tpm-ecc.pub.pem /etc/tpm-ecc.pub.pem
 
 公钥文件必须是普通文件、root 拥有，并且权限不能比 `0644` 更宽。
 
+多用户环境建议把公钥放在 `/etc/security/pam_tpm_ecc/keys/` 下，文件名使用
+`<username>.pem`：
+
+```sh
+sudo install -d -o root -g root -m 0755 /etc/security/pam_tpm_ecc/keys
+sudo install -o root -g root -m 0644 /tmp/tpm-ecc.pub.pem /etc/security/pam_tpm_ecc/keys/alice.pem
+```
+
 ## PAM 配置
 
 在 `/etc/pam.d/<service>` 中添加：
@@ -103,13 +111,32 @@ sudo install -o root -g root -m 0644 /tmp/tpm-ecc.pub.pem /etc/tpm-ecc.pub.pem
 auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey=/etc/tpm-ecc.pub.pem
 ```
 
+多用户环境按当前 PAM 用户查找公钥：
+
+```pam
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey_dir=/etc/security/pam_tpm_ecc/keys
+```
+
 参数：
 
 | 参数 | 必填 | 说明 |
 |---|---|---|
 | `key_handle=` | 是 | TPM 持久化 ECC key handle，支持十进制或 `0x...` |
-| `pubkey=` | 是 | 对应 P-256 SPKI PEM 公钥 |
+| `pubkey=` | 二选一 | 全局 P-256 SPKI PEM 公钥 |
+| `pubkey_dir=` | 二选一 | 按 PAM 用户名查找 `<username>.pem` 的公钥目录 |
 | `tcti=` | 否 | TCTI 字符串，默认 `device:/dev/tpmrm0` |
+
+`pubkey=` 和 `pubkey_dir=` 互斥；同时配置会被视为模块配置错误，不会按优先级选择其中一个。
+`pubkey_dir=` 模式下，用户名只允许 ASCII 字母、数字、`.`、`_`、`-`，以避免路径穿越。
+对应用户的公钥文件不存在时，模块返回 `PAM_IGNORE`，PAM 会继续执行后续规则；这可以用于给
+不想使用 TPM 的用户禁用本模块。
+
+例如让已配置公钥的用户优先使用 TPM，未配置公钥的用户继续走普通密码：
+
+```pam
+auth sufficient pam_tpm_ecc.so key_handle=0x81020000 pubkey_dir=/etc/security/pam_tpm_ecc/keys
+auth include system-auth
+```
 
 不指定 `tcti=` 时模块只会使用默认的 `device:/dev/tpmrm0`，不会自动 fallback 到
 `tabrmd` / `tpm2-abrmd`。
